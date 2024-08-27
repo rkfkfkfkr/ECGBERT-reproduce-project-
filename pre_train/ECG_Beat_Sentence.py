@@ -31,8 +31,11 @@ def calculate_distance(signal, cluster_centers):
     distances = euclidean_distances([signal], cluster_centers)
     return distances
 
-def generate_sentence_and_masking(lead_sig, prefix):
+def generate_sentence_and_masking(lead_sig, preprocessed_signal, lead):
     
+    def compress_signal(signal):
+        return [key for key, group in groupby(signal)], [len(list(group)) for key, group in groupby(signal)]
+
     def find_beats(lead_sig):
         beats = []
         current_beat = []
@@ -46,10 +49,10 @@ def generate_sentence_and_masking(lead_sig, prefix):
                 beat_start = i
             else:
                 current_beat.append(int(value))
-        
+            
         if current_beat and len(current_beat) > 3:
             beats.append((current_beat, beat_start, len(lead_sig) - 1))
-        
+            
         return beats
 
     def extract_random_beats(beats):
@@ -58,42 +61,39 @@ def generate_sentence_and_masking(lead_sig, prefix):
         
         start_idx = random.randint(0, len(beats) - num_beats)
         selected_beats = beats[start_idx:start_idx + num_beats]
-        
         sentence = [beat for beat, _, _ in selected_beats]
-        st_end_indices = (selected_beats[0][1], selected_beats[-1][2])
-        
+        st_end_indices = [selected_beats[0][1], selected_beats[-1][2]]
+            
         return np.concatenate(sentence), st_end_indices
 
-    def compress_signal(signal):
-        return [key for key, group in groupby(signal)], [len(list(group)) for key, group in groupby(signal)]
-    
     comp_sig, comp_sig_len = compress_signal(lead_sig)
     beats = find_beats(comp_sig)
+    if len(beats) < 1:
+        return [], []
     sentence_comp, st_end_idx_comp = extract_random_beats(beats)
-    
-    st_idx, end_idx = st_end_idx_comp
-    sentence = [71]  # CLS token
-    sentence.extend(np.repeat(sentence_comp, comp_sig_len[st_idx:end_idx+1]))
-    sentence.append(72)  # SEP token
-    
-    sentence_st_end_idx = (sum(comp_sig_len[:st_idx]), sum(comp_sig_len[:end_idx+1]))
 
-    # Masking 처리
     choice_num = int(len(sentence_comp) * 0.15)
     if choice_num < 1:
         choice_num = 1
     Masking_comp_idx = np.random.choice(range(0, len(sentence_comp)-1),  choice_num)
-        
-    sentence_comp[Masking_comp_idx] = 73  # Mask token
+    
+    st_idx, end_idx = st_end_idx_comp
+    sentence = [71]  # CLS tokens
+    sentence.extend(np.repeat(sentence_comp, comp_sig_len[st_idx:end_idx+1]))
+    sentence.append(72)  # SEP token
+    
+    sentence_st_end_idx = [sum(comp_sig_len[:st_idx]), sum(comp_sig_len[:st_idx])+len(sentence)-1]
+    sentence_signal = preprocessed_signal[:,lead][sentence_st_end_idx[0]:sentence_st_end_idx[1]+1]
+    
+    sentence_comp[Masking_comp_idx] = 73
     Masked_sentence = [71]  # CLS token
     Masked_sentence.extend(np.repeat(sentence_comp, comp_sig_len[st_idx:end_idx+1]))
     Masked_sentence.append(72)  # SEP token
-        
-    Masked_idx = np.where(np.array(Masked_sentence) == 73)[0]
-    #Masked_st_end_idx = (Masked_idx[0] + sentence_st_end_idx[0], Masked_idx[-1] + sentence_st_end_idx[0])
-    Masked_st_end_idx = [Masked_idx[0], Masked_idx[-1]]
 
-    return Masked_sentence, Masked_st_end_idx, sentence, Masked_st_end_idx
+    Masked_sentence_st_end_idx = [sum(comp_sig_len[:st_idx]), sum(comp_sig_len[:st_idx])+len(Masked_sentence)-1]
+    Masked_signal = preprocessed_signal[:,lead][Masked_sentence_st_end_idx[0]:Masked_sentence_st_end_idx[1]+1]
+
+    return sentence, sentence_signal, Masked_sentence, Masked_signal
 
 
 def vocab_create_assignment(processed_data_dir, seg_dir, cluster_dir, save_dir, batch_size=1024):
@@ -126,17 +126,12 @@ def vocab_create_assignment(processed_data_dir, seg_dir, cluster_dir, save_dir, 
                         idx_st, idx_end = signal_segments[lead][wave_type][0][seg_idx]
                         lead_signal_vocab[idx_st:idx_end+1] = int(cluster_idx)
 
-                Masked_sentence, Masked_st_end_idx, sentence, sentence_st_end_idx = generate_sentence_and_masking(lead_signal_vocab, prefix)
-                
-                sentence_signal = preprocessed_signal[:,lead][sentence_st_end_idx[0]:sentence_st_end_idx[1]+1]
-                Masked_signal = sentence_signal[Masked_st_end_idx[0] : Masked_st_end_idx[-1]+1]
-
-                sentence_save_data = [Masked_sentence, Masked_signal, sentence, sentence_signal]
-
-                batch_data.append(sentence_save_data)
+                sentence, sentence_signal, Masked_sentence, Masked_signal  = generate_sentence_and_masking(lead_signal_vocab, preprocessed_signal, lead)
+                if len(Masked_sentence) > 0:
+                    sentence_save_data = [sentence, sentence_signal, Masked_sentence, Masked_signal]
+                    batch_data.append(sentence_save_data)
 
                 if len(batch_data) >= batch_size:
-                    
                     for data in batch_data:
                         if prefix.endswith('train'):
                             save_pkl_data(os.path.join(save_dir, 'train'), f'sentence_{t_sentence_num}.pkl', data)
@@ -155,11 +150,21 @@ def vocab_create_assignment(processed_data_dir, seg_dir, cluster_dir, save_dir, 
                     save_pkl_data(os.path.join(save_dir, 'val'), f'sentence_{v_sentence_num}.pkl', data)
                     v_sentence_num += 1
             batch_data.clear()
-            
-if __name__ == '__main__':
-    processed_data_dir = 'D:/data/ECGBERT/for_git3/preprocessing/ECG_preprocessing/'
-    seg_dir = 'D:/data/ECGBERT/for_git3/preprocessing/ECG_segmentation/'
-    cluster_dir = 'D:/data/ECGBERT/for_git3/preprocessing/ECG_Clustering/'
-    save_dir = 'D:/data/ECGBERT/for_git3/preprocessing/ECG_Vocab/'
+        logger.info(f'{prefix} Sentence Done')
+
+import logging
+
+logging.basicConfig(level='INFO')
+logger = logging.getLogger(__name__)
+
+def ECG_Clustering_Preprocessing(dir):
+    
+    processed_data_dir = os.path.join(dir, f'ECG_Preprocessing')
+    seg_dir = os.path.join(dir, f'ECG_Segmentation')
+    cluster_dir = os.path.join(dir, f'ECG_Clustering')
+    save_dir = os.path.join(dir, f'ECG_Sentence')
     
     vocab_create_assignment(processed_data_dir, seg_dir, cluster_dir, save_dir)
+    
+    
+    

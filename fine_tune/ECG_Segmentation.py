@@ -4,7 +4,7 @@ from scipy.signal import butter, filtfilt, find_peaks
 import pickle
 import os
 
-def load_processed_data(file_path):
+def load_pkl_data(file_path):
     with open(file_path, 'rb') as f:
         return pickle.load(f)
 
@@ -74,35 +74,45 @@ def save_segments(lead_segments, save_dir, prefix):
         with open(save_path, 'wb') as f:
             pickle.dump(wave_segments, f)
 
-def process_and_save_segments(processed_data_dir, save_dir, prefixes, fs):
-    for prefix in prefixes:
-        file_path = os.path.join(processed_data_dir, f'{prefix}_processed_signals.pkl')
-        signals = load_processed_data(file_path)
-        '''
-        i = 3767
-        signal = signals[i]
-        clean_signals, r_peaks = detect_peaks(signal, fs)
-        lead_segments = segment_waveforms(clean_signals, r_peaks, fs)
-        save_segments(lead_segments, save_dir, f'{prefix}_{i}')
-        '''
-        seg_data_num = 0
-        
-        for i, signal in enumerate(signals):
+def save_pkl_data(save_dir, file_name, save_pkl):
+    os.makedirs(save_dir, exist_ok=True)
+    save_path = os.path.join(save_dir, file_name)
+    with open(save_path, 'wb') as f:
+        pickle.dump(save_pkl, f)
+
+def process_and_save_segments(processed_data_dir, save_dir, downstrem_task, fs):
+    for suffix in ['train', 'val']:
+        prefix = f'{downstrem_task}_{suffix}'
             
-            #if prefix == 'georgia' and i in None_list :
-            #    continue
-            print(f'{prefix}_{i}/{len(signals)}')
+        file_path = os.path.join(processed_data_dir, f'{prefix}_processed_signals.pkl')
+        signals = load_pkl_data(file_path)
+
+        file_path = os.path.join(processed_data_dir, f'{prefix}_labels.pkl')
+        labels = load_pkl_data(file_path)
+
+        seg_data_num = 0
+            
+        for idx, signal in enumerate(signals):
+                
             clean_signals, r_peaks = detect_peaks(signal, fs)
             lead_segments = segment_waveforms(clean_signals, r_peaks, fs)
-            save_segments(lead_segments, save_dir, f'{prefix}_{i}')
+            save_segments(lead_segments, save_dir, f'{prefix}_{idx}')
+            save_pkl_data(save_dir, f'{prefix}_{idx}_label.pkl', labels[idx]) # labels[idx].shape = (seq_len,)
             seg_data_num +=1
+            
+        logger.info(f'{prefix} seg data num : {seg_data_num}')
         
-        print(f'{prefix} seg data num : {seg_data_num}')
-        
-if __name__ == '__main__':
-    processed_data_dir = 'D:/data/ECGBERT/for_git3/preprocessing/ECG_preprocessing/'
-    save_dir = 'D:/data/ECGBERT/for_git3/preprocessing/ECG_segmentation/'
-    prefixes = ['cpsc_train', 'cpsc_val', 'georgia_train', 'georgia_val', 'ptb_xl_train', 'ptb_xl_val'] #  
-    fs = 500  # Sample frequency
+import logging
 
-    process_and_save_segments(processed_data_dir, save_dir, prefixes, fs)
+logging.basicConfig(level='INFO')
+logger = logging.getLogger(__name__)
+
+def ECG_Segmentation(downstrem_tasks, dir):
+    
+    fs = 360
+    
+    for downstrem_task in downstrem_tasks:
+        processed_data_dir = os.path.join(dir, f'{downstrem_task}/ECG_Preprocessing')
+        save_dir = os.path.join(dir, f'{downstrem_task}/ECG_Segmentation')
+        
+        process_and_save_segments(processed_data_dir, save_dir, downstrem_task, fs)

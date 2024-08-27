@@ -4,7 +4,7 @@ import pickle
 from tslearn.clustering import TimeSeriesKMeans
 import time
 import torch
-from models import KMeansClusteringGPU
+from kmeans_module import KMeansClusteringGPU
 
 def load_pkl_data(file_path):
     with open(file_path, 'rb') as f:
@@ -16,7 +16,7 @@ def save_pkl_data(save_dir, file_name, save_pkl):
     save_path = os.path.join(save_dir, file_name)
     with open(save_path, 'wb') as f:
         pickle.dump(save_pkl, f)
-    print('pkl file saved')
+    #print('pkl file saved')
     
 def reshape_signals(wave_type_signals, bg_max_length=0):
     # Calculate the number of signals and the maximum length
@@ -44,15 +44,15 @@ def kmeans_clustering(X, n_clusters, save_dir, wave_type, batch_num):
     if batch_num == 1:
         kmeans.fit(X)
     else:
-        batch_size = 1000#int(len(X)/batch_num)
+        batch_size = 1000
         max_length = max(len(signal) for signal in X)
         for i in range(0, len(X), batch_size):
-            print(f'partial_fit {int(i/batch_size)}/{int(len(X)/batch_size)+1}')
+            #print(f'partial_fit {int(i/batch_size)}/{int(len(X)/batch_size)+1}')
             reshape_X = reshape_signals(X[i:i+batch_size], bg_max_length=max_length)
             kmeans.partial_fit(reshape_X)
 
     cluster_t= time.time() - start_t
-    print(f'{wave_type}-clustering _ t: {(cluster_t):.3f}')
+    #print(f'{wave_type}-clustering _ t: {(cluster_t):.3f}')
     
     save_pkl_data(save_dir, f'{wave_type}_cluster_centorids.pkl', kmeans.centroids)
     
@@ -65,41 +65,33 @@ def process_wave_type_segment(prefix_seg_data, preprocessed_signal):
 
 def clustering_and_save_wave(seg_dir, processed_data_dir, save_dir):
     wave_types_clusters = {'p': (12,1), 'qrs': (19,1), 't': (14,1), 'bg': (25,2)}
-    prefix_file_num = {
-        'cpsc_train': 5501, 'cpsc_val': 1376, 'georgia_train': 8270,
-        'georgia_val': 2068, 'ptb_xl_train': 17439, 'ptb_xl_val': 4360
-    }
+
     for wave_type, (n_clusters, batch_num) in wave_types_clusters.items():
 
-        # save wave_type_signals
-        wave_type_signals = []
-        for prefix, prefix_data_num in prefix_file_num.items():
-            preprocessed_signals = load_pkl_data(os.path.join(processed_data_dir, f'{prefix}_processed_signals.pkl'))
-            for prefix_data_idx in range(prefix_data_num):
-                preprocessed_signal = preprocessed_signals[prefix_data_idx]
-                prefix_data_file = f'{prefix}_{prefix_data_idx}_{wave_type}_segments.pkl'
-                prefix_seg_data = load_pkl_data(os.path.join(seg_dir, os.path.join(wave_type, prefix_data_file)))
-                prefix_preprocessed_data = process_wave_type_segment(prefix_seg_data, preprocessed_signal)
-                wave_type_signals.extend(prefix_preprocessed_data)
-            print(f'{wave_type}-{prefix}')
+        file_path = os.path.join(save_dir, f'{wave_type}_signals.pkl')
+        wave_type_signals = load_pkl_data(file_path)
+
+        #print(f'clustering {wave_type}')
+        if batch_num == 1:
+            #reshaped_signals = load_pkl_data(os.path.join(save_dir , f'{wave_type}_cluster_X.pkl'))
+            kmeans_clustering(reshape_signals(wave_type_signals), n_clusters, save_dir, wave_type, batch_num)
+            del wave_type_signals
+        else:
             
-        save_pkl_data(save_dir, f'{wave_type}_signals.pkl', wave_type_signals)
-
-        if wave_type != 'bg':
-            file_path = os.path.join(save_dir, f'{wave_type}_signals.pkl')
-            wave_type_signals = load_pkl_data(file_path)
-
-            # savereshaped_signals
-            reshaped_signals = reshape_signals(wave_type_signals)
-            wave_type_signals.clear()
-            save_pkl_data(save_dir, f'{wave_type}_cluster_X.pkl', reshaped_signals)
-
-        print(f'{wave_type} clustering_preprocessing Done')
-
+            #print(len(wave_type_signals))
+            kmeans_clustering(wave_type_signals, n_clusters, save_dir, wave_type, batch_num)
+        #print(f'{wave_type} Clustering Done & Model saved')
+        logger.info(f'{wave_type} Clustering Done & Model saved')
         
-if __name__ == '__main__':
-    processed_data_dir = 'D:/data/ECGBERT/for_git3/preprocessing/ECG_preprocessing/'
-    seg_dir = 'D:/data/ECGBERT/for_git3/preprocessing/ECG_segmentation/'
-    save_dir = 'D:/data/ECGBERT/for_git3/preprocessing/ECG_Clustering/'
+import logging
+
+logging.basicConfig(level='INFO')
+logger = logging.getLogger(__name__)
+
+def ECG_Clustering(dir):
+    
+    processed_data_dir = os.path.join(dir, f'ECG_Preprocessing')
+    seg_dir = os.path.join(dir, f'ECG_Segmentation')
+    save_dir = os.path.join(dir, f'ECG_Clustering')
     
     clustering_and_save_wave(seg_dir, processed_data_dir, save_dir)

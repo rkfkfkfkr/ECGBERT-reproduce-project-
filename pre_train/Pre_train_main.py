@@ -3,7 +3,7 @@ from ECG_Segmentation import ECG_Segmentation
 from ECG_Clustering_Preprocessing import ECG_Clustering_Preprocessing
 from ECG_Clustering import ECG_Clustering
 from ECG_Beat_Sentence import ECG_Beat_Sentence
-from ECGBERT_pre_train import ECGBERT_Pre_train
+from Pre_train_engine import Pre_train_engine
 
 import os
 import logging
@@ -30,4 +30,4 @@ if __name__ == '__main__':
     ECG_Beat_Sentence(dir)
     
     # Pre_train
-    ECGBERT_Pre_train(dir)
+    Pre_train_engine(dir)

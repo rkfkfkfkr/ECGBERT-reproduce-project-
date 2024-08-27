@@ -146,7 +146,7 @@ import logging
 logging.basicConfig(level='INFO')
 logger = logging.getLogger(__name__)
 
-def ECGBERT_Pre_train(dir):
+def Pre_train_engine(dir):
     
     train_data_dir = os.path.join(dir, f'ECG_Sentence/train')
     val_data_dir = os.path.join(dir, f'ECG_Sentence/val')

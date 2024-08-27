@@ -157,7 +157,7 @@ import logging
 logging.basicConfig(level='INFO')
 logger = logging.getLogger(__name__)
 
-def ECG_Clustering_Preprocessing(dir):
+def ECG_Beat_Sentence(dir):
     
     processed_data_dir = os.path.join(dir, f'ECG_Preprocessing')
     seg_dir = os.path.join(dir, f'ECG_Segmentation')

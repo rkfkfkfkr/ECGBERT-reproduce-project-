@@ -5,7 +5,7 @@ import logging
 import random
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader, Dataset, random_split
+from torch.utils.data import DataLoader, random_split
 from tqdm import tqdm
 from transformers import BertTokenizer
 from torch.optim import AdamW
@@ -21,36 +21,6 @@ def get_tokenizer():
     vocab_file_path = "custom_vocab.txt"
     tokenizer = BertTokenizer(vocab_file=vocab_file_path)
     return tokenizer
-
-# ECGDataset 클래스
-class ECGDataset(Dataset):
-    def __init__(self, hdf5_file, sample_fraction):
-        self.hdf5_file = hdf5_file
-        self.hdf = h5py.File(self.hdf5_file, 'r')
-        self.keys = list(self.hdf.keys())
-        self.max_seq_length = self._get_seq_length()
-
-        if sample_fraction < 1.0:
-            self.keys = random.sample(self.keys, int(len(self.keys) * sample_fraction))
-        logger.info(f"Training with {sample_fraction} - signal_num:{len(self.keys)*12}")
-
-    def __len__(self):
-        return len(self.keys)
-
-    def __getitem__(self, idx):
-        group_key = self.keys[idx]
-        group = self.hdf[group_key]
-
-        masked_signal = torch.tensor(group['masked_signal'][:], dtype=torch.float32)
-        sentence_token = torch.tensor(group['sentence_token'][:], dtype=torch.long)
-        masked_sentence_token = torch.tensor(group['masked_sentence_token'][:], dtype=torch.long)
-        masked_sentence_attention_mask = torch.tensor(group['masked_sentence_attention_mask'][:], dtype=torch.long)
-
-        return masked_signal, sentence_token, masked_sentence_token, masked_sentence_attention_mask
-
-    def _get_seq_length(self, sec=10):
-        # Sampling frequency for the signals
-        return self.hdf[self.keys[0]].attrs['fs']*sec
 
 class UNetCNNEmbedding(nn.Module): 
     def __init__(self, in_channels, embed_dim): 
@@ -99,18 +69,21 @@ class ECGBERT(nn.Module):
 
         self.fc = nn.Linear(embed_dim, vocab_size)
 
-    def forward(self, masked_sentence_token, sentence_attention_mask, masked_signal):
+    def forward(self, masked_sentence_token, sentence_attention_mask, signal):
         batch_size, lead, seq_max_len = masked_sentence_token.size()
         masked_sentence_token_flat = masked_sentence_token.view(batch_size * lead, seq_max_len)
         sentence_attention_mask_flat = sentence_attention_mask.view(batch_size * lead, seq_max_len)
-        masked_signal_flat = masked_signal.view(batch_size * lead, 1, seq_max_len)
+        #logger.info(f"{masked_sentence_token.size()}")
+        #logger.info(f"{sentence_attention_mask.size()}")
+        #logger.info(f"{signal.size()}")
+        signal_flat = signal.view(batch_size * lead, 1, seq_max_len)
         
         token_embed = self.token_embedding(masked_sentence_token_flat)
         pos_embed = self.positional_embedding(masked_sentence_token_flat)
         
-        masked_signal_embed = self.cnn_embedding(masked_signal_flat).permute(0,2,1)
+        signal_embed = self.cnn_embedding(signal_flat).permute(0,2,1)
         
-        combined_embed = token_embed + pos_embed + masked_signal_embed
+        combined_embed = token_embed + pos_embed + signal_embed
         # [batch_size*lead, seq_max_len, embedd_dim]
 
         transformer_output = self.transformer(
@@ -131,9 +104,9 @@ def train_epoch(model, dataloader, optimizer, criterion, device, epoch, total_ep
     # GradScaler 초기화
     scaler = amp.GradScaler()
 
-    for masked_signal, sentence_token, masked_sentence_token, masked_sentence_attention_mask in tqdm(dataloader, desc=f"Training Epoch {epoch+1}/{total_epochs}"):
-        masked_signal, sentence_token, masked_sentence_token, masked_sentence_attention_mask = (
-            masked_signal.to(device),
+    for signal, sentence_token, masked_sentence_token, masked_sentence_attention_mask in tqdm(dataloader, desc=f"Training Epoch {epoch+1}/{total_epochs}"):
+        signal, sentence_token, masked_sentence_token, masked_sentence_attention_mask = (
+            signal.to(device),
             sentence_token.to(device),
             masked_sentence_token.to(device),
             masked_sentence_attention_mask.to(device)
@@ -143,7 +116,7 @@ def train_epoch(model, dataloader, optimizer, criterion, device, epoch, total_ep
 
         # Mixed precision training with autocast
         with amp.autocast():
-            logits = model(masked_sentence_token, masked_sentence_attention_mask, masked_signal)
+            logits = model(masked_sentence_token, masked_sentence_attention_mask, signal)
             loss = criterion(logits.view(-1, logits.size(-1)), sentence_token.view(-1))
 
         # Scaler를 사용한 그라디언트 계산 및 업데이트
@@ -163,9 +136,9 @@ def validate_epoch(model, dataloader, criterion, device, epoch, total_epochs):
     start_time = time.time()
 
     with torch.no_grad():
-        for masked_signal, sentence_token, masked_sentence_token, masked_sentence_attention_mask in tqdm(dataloader, desc=f"Validation Epoch {epoch+1}/{total_epochs}"):
-            masked_signal, sentence_token, masked_sentence_token, masked_sentence_attention_mask = (
-                masked_signal.to(device),
+        for signal, sentence_token, masked_sentence_token, masked_sentence_attention_mask in tqdm(dataloader, desc=f"Validation Epoch {epoch+1}/{total_epochs}"):
+            signal, sentence_token, masked_sentence_token, masked_sentence_attention_mask = (
+                signal.to(device),
                 sentence_token.to(device),
                 masked_sentence_token.to(device),
                 masked_sentence_attention_mask.to(device)
@@ -173,7 +146,7 @@ def validate_epoch(model, dataloader, criterion, device, epoch, total_epochs):
 
             # Mixed precision inference with autocast
             with amp.autocast():
-                logits = model(masked_sentence_token, masked_sentence_attention_mask, masked_signal)
+                logits = model(masked_sentence_token, masked_sentence_attention_mask, signal)
                 loss = criterion(logits.view(-1, logits.size(-1)), sentence_token.view(-1))
                 total_loss += loss.item()
 
@@ -182,35 +155,48 @@ def validate_epoch(model, dataloader, criterion, device, epoch, total_epochs):
 
 # Custom collate function
 def collate_fn(batch, max_seq_length):
-    masked_signal, sentence_token, masked_sentence_token, masked_sentence_attention_mask = zip(*batch)
+    signal, sentence_token, masked_sentence_token, masked_sentence_attention_mask = zip(*batch)
 
-    padded_masked_signals = []
-    for signals in masked_signal:
-        if signals.size(1) > max_seq_length:
-            signals = signals[:, :max_seq_length]  # truncate if longer
+    #logger.info(f"{masked_sentence_token}")# 5, 12, 
+    #logger.info(f"{len(masked_sentence_token[0])}")#12
+    #logger.info(f"{len(masked_sentence_token[0][0])}")
+
+    padded_lead_signals = []
+    for lead_signal in signal:
+        if lead_signal.size(1) > max_seq_length:
+            lead_signal = lead_signal[:, :max_seq_length]  # truncate if longer
         else:
-            signals = torch.cat([signals, torch.zeros(signals.size(0), max_seq_length - signals.size(1))], dim=1)  # pad if shorter
-        padded_masked_signals.append(signals)
+            lead_signal = torch.cat([lead_signal, torch.zeros(lead_signal.size(0), max_seq_length - lead_signal.size(1))], dim=1)  # pad if shorter
+        padded_lead_signals.append(lead_signal)
 
-    masked_signal_padded = torch.stack(padded_masked_signals, dim=0)
+    signal_padded = torch.stack(padded_lead_signals, dim=0)
 
     sentence_token_padded = torch.stack(sentence_token, dim=0)[:,:,:max_seq_length]
     masked_sentence_token_padded = torch.stack(masked_sentence_token, dim=0)[:,:,:max_seq_length]
     masked_sentence_attention_mask_padded = torch.stack(masked_sentence_attention_mask, dim=0)[:,:,:max_seq_length]
 
-    return masked_signal_padded, sentence_token_padded, masked_sentence_token_padded, masked_sentence_attention_mask_padded
+    return signal_padded, sentence_token_padded, masked_sentence_token_padded, masked_sentence_attention_mask_padded
 
 
 # 모델 학습 메인 함수
-def main_train(hdf5_file, model_dir, sample_fraction=1.0, batch_size=8, num_epochs=10, learning_rate=1e-3, device='cuda'):
+def BERT_pretrain(params, dataset, max_seq_len, device):
+    
+    num_epochs = int(params['train']['num_epochs'])
+    batch_size = int(params['train']['batch_size'])
+    learning_rate = float(params['train']['learning_rate'])
+    model_dir = params['dataset']['output_dir']
+    sample_fraction = float(params['train']['pretrain_sample_fraction'])
+    
     tokenizer = get_tokenizer()
-
-    dataset = ECGDataset(hdf5_file, sample_fraction=sample_fraction)
-    max_seq_len = dataset._get_seq_length()
+    
+    if sample_fraction < 1.0:
+        sample_size = max(int(sample_fraction*len(dataset)),1)
+        dataset, _ = random_split(dataset, [sample_size, len(dataset)-sample_size])
     
     train_size = int(0.8 * len(dataset))
     val_size = len(dataset) - train_size
     train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
+    logger.info(f"{sample_fraction} - train_size: {train_size}, val_size: {val_size}")
 
     train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=lambda batch: collate_fn(batch, max_seq_length=max_seq_len))
     val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, collate_fn=lambda batch: collate_fn(batch, max_seq_length=max_seq_len))
@@ -224,7 +210,7 @@ def main_train(hdf5_file, model_dir, sample_fraction=1.0, batch_size=8, num_epoc
     # ECGBERT 모델, 옵티마이저, 스케줄러, 손실 함수 초기화
     model = ECGBERT(vocab_size, embed_dim, max_seq_len, num_heads, num_layers, hidden_dim).to(device)
     optimizer = AdamW(model.parameters(), lr=learning_rate)
-    scheduler = StepLR(optimizer, step_size=2, gamma=0.1)  # 2에폭마다 학습률 감소
+    #scheduler = StepLR(optimizer, step_size=2, gamma=0.1)  # 2에폭마다 학습률 감소
     criterion = nn.CrossEntropyLoss(ignore_index=tokenizer.pad_token_id)
 
     # 하이퍼파라미터 기반 파일 이름 생성
@@ -237,17 +223,16 @@ def main_train(hdf5_file, model_dir, sample_fraction=1.0, batch_size=8, num_epoc
     total_start_time = time.time()
 
     with open(log_file, "w") as log_f:
-        log_f.write(f"Total Epoch: {num_epochs}, data_hdf5: {os.path.basename(hdf5_file)}, sample_fraction: {sample_fraction}, batch_size: {batch_size}, learning_rate: {learning_rate}\n")
+        log_f.write(f"Total Epoch: {num_epochs}, sample_fraction: {sample_fraction}, batch_size: {batch_size}, learning_rate: {learning_rate}\n")
 
         for epoch in range(num_epochs):
-            logger.info(f"Epoch {epoch+1}/{num_epochs}")
             
             # 에폭별 학습 및 검증 수행
             train_loss, train_time = train_epoch(model, train_dataloader, optimizer, criterion, device, epoch, num_epochs)
             val_loss, val_time = validate_epoch(model, val_dataloader, criterion, device, epoch, num_epochs)
 
             total_time = train_time + val_time
-            scheduler.step()  # 스케줄러 업데이트
+            #scheduler.step()  # 스케줄러 업데이트
 
             logger.info(f"Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}, Time Taken: {total_time:.2f}s")
             log_f.write(f"Epoch {epoch+1}/{num_epochs}, Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}, Train Time: {train_time:.2f}s, Val Time: {val_time:.2f}s\n")
@@ -259,25 +244,3 @@ def main_train(hdf5_file, model_dir, sample_fraction=1.0, batch_size=8, num_epoc
     # 학습된 모델 저장
     torch.save(model.state_dict(), model_file)
     logger.info(f"Model saved at {model_file}.")
-    
-'''
-if __name__ == "__main__":
-    dir = "D:/data/ECGBERT/for_git4/preprocessing/"
-
-    sentence_sample_fraction = 0.2
-    hdf5_file = os.path.join(dir, f"{sentence_sample_fraction}_sentence_ecg_data.hdf5")
-
-    sample_fraction = 0.001
-    model_dir = "D:/data/ECGBERT/for_git4/results/model/"
-
-    # 학습 실행
-    main_train(hdf5_file, model_dir, sample_fraction=sample_fraction, batch_size=32, num_epochs=10, learning_rate=1e-4, device='cuda')
-'''
-
-def ECGPreTrain(base_dir, output_dir, sentence_sample_fraction, pretrain_sample_fraction=0.001):
-    
-    hdf5_file = os.path.join(base_dir, f"{sentence_sample_fraction}_sentence_ecg_data.hdf5")
-    model_dir = output_dir
-
-    # 학습 실행
-    main_train(hdf5_file, model_dir, sample_fraction=pretrain_sample_fraction, batch_size=32, num_epochs=10, learning_rate=1e-4, device='cuda')

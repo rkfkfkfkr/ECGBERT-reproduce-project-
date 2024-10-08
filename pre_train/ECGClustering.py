@@ -1,9 +1,7 @@
-import h5py
 import numpy as np
 import os
 import random
 import logging
-import json
 import joblib
 import time
 from sklearn.cluster import KMeans
@@ -15,45 +13,38 @@ logging.basicConfig(level='INFO',
                     format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Class for handling ECG data loading and processing from HDF5
+# Class for handling ECG data loading and processing from a dictionary
 class ECGDataHandler:
-    def __init__(self, hdf5_file, sample_fraction=1.0):
-        self.hdf5_file = hdf5_file
+    def __init__(self, ecg_data_dict, sample_fraction=1.0):
+        self.ecg_data_dict = ecg_data_dict
         self.sample_fraction = sample_fraction
 
     def extract_wave_segments(self, wave_type):
-        """Extract wave segments for the given wave type (P, QRS, T, BG) from HDF5."""
+        """Extract wave segments for the given wave type (P, QRS, T, BG) from the dict data."""
         wave_segments = []
-        with h5py.File(self.hdf5_file, 'r') as hdf:
-            
-            sample_keys = list(hdf.keys())
-            if self.sample_fraction < 1.0:
-                sample_size = int(len(sample_keys) * self.sample_fraction)
-                sample_keys = random.sample(sample_keys, sample_size)
+        
+        # Select sample groups if sample_fraction < 1.0
+        sample_keys = list(self.ecg_data_dict.keys())
+        if self.sample_fraction < 1.0:
+            sample_size = int(len(sample_keys) * self.sample_fraction)
+            sample_keys = random.sample(sample_keys, sample_size)
 
-            # Process each group in sampled keys
-            for group_key in sample_keys:
-                group = hdf[group_key]
-                segment_data = self._load_segments(group)
+        # Process each group in sampled keys
+        for group_key in sample_keys:
+            group_data = self.ecg_data_dict[group_key]
+            signals = group_data["signal"]  # Extract signals
+            segment_data = group_data["segments"]  # Extract segment data
 
-                # Extract the signal and segment data
-                signals = group['signal'][:]  # Load signals directly from HDF5
-
-                # Vectorized extraction of lead segments
-                for lead_idx in range(signals.shape[0]):
-                    lead_segments = np.array(segment_data[lead_idx][wave_type])
-                    # Efficient slicing and segment extraction
-                    segments_signal_for_lead = [
-                    signals[lead_idx][start:end] for start, end in lead_segments]
-                    wave_segments.extend(segments_signal_for_lead)
+            # Vectorized extraction of lead segments
+            for lead_idx in range(signals.shape[0]):
+                lead_segments = np.array(segment_data[lead_idx][wave_type])
+                # Efficient slicing and segment extraction
+                segments_signal_for_lead = [
+                    signals[lead_idx][start:end] for start, end in lead_segments
+                ]
+                wave_segments.extend(segments_signal_for_lead)
 
         return wave_segments
-
-    @staticmethod
-    def _load_segments(group):
-        """Load segments from the HDF5 file and return them as a dict."""
-        segments_json = group['segments'][()].decode('utf-8')
-        return json.loads(segments_json)
 
     @staticmethod
     def pad_wave_segments(wave_segments, n_jobs=-1):
@@ -118,9 +109,9 @@ class ECGClustering:
 
 # Class for running the overall clustering process
 class ECGClusterProcessor:
-    def __init__(self, hdf5_file, sample_fraction, model_exists=False, model_dir='clustering_models'):
-        self.data_handler = ECGDataHandler(hdf5_file, sample_fraction)
-        self.clustering = ECGClustering(model_dir, use_pca=True)
+    def __init__(self, model_dir, ecg_data_dict, sample_fraction, model_exists=False, use_pca=True):
+        self.data_handler = ECGDataHandler(ecg_data_dict, sample_fraction)
+        self.clustering = ECGClustering(model_dir, use_pca=use_pca)
         self.model_exists = model_exists
         self.wave_clusters = {
             "P": 12,
@@ -128,19 +119,20 @@ class ECGClusterProcessor:
             "T": 14,
             "BG": 25
         }
+        
+        self.file_handler = logging.FileHandler(os.path.join(model_dir, 'clustering_log.txt'))
+        logging.getLogger().addHandler(self.file_handler)
 
     def run_clustering(self):
         """Run clustering for P, QRS, T, and BG waveforms."""
         if not self.model_exists:
             logger.info("Starting clustering with new models.")
             
-            # 전체 시간 측정을 위한 시작 시간
             total_start_time = time.time()
 
             for wave_type, n_clusters in self.wave_clusters.items():
-                # wave_type 별 시작 시간 측정
                 start_time = time.time()
-
+                logger.info("-----------------------------------")
                 logger.info(f"Processing wave type: {wave_type}")
                 
                 # Extract wave segments for the specific wave type
@@ -158,45 +150,11 @@ class ECGClusterProcessor:
                 # Save the trained model
                 self.clustering.save_model(model, wave_type)
 
-                # wave_type 처리 시간 측정 후 출력
                 elapsed_time = time.time() - start_time
                 logger.info(f"Time taken for {wave_type}: {int(elapsed_time // 3600)}h {int((elapsed_time % 3600) // 60)}m {int(elapsed_time % 60)}s")
             
-            # 전체 처리 시간 측정 후 출력
             total_elapsed_time = time.time() - total_start_time
             logger.info(f"Total time taken: {int(total_elapsed_time // 3600)}h {int((total_elapsed_time % 3600) // 60)}m {int(total_elapsed_time % 60)}s")
         else:
             logger.info("Models already exist. Skipping clustering.")
 
-'''
-# Usage Example
-if __name__ == "__main__":
-    hdf5_file = "D:/data/ECGBERT/for_git4/preprocessing/segments_ecg_data.hdf5"
-    sample_fraction = 0.01
-    model_dir = f'D:/data/ECGBERT/for_git4/preprocessing/clustering_models/{sample_fraction}_sample/'
-    
-    file_handler = logging.FileHandler(os.path.join(model_dir, 'clustering_log.txt'))
-    logging.getLogger().addHandler(file_handler)
-    
-    # Initialize and run clustering
-    processor = ECGClusterProcessor(hdf5_file, sample_fraction=sample_fraction, model_exists=False, model_dir=model_dir)
-    processor.run_clustering()
-    
-    # parameter
-    #hdf5_file, sample_fraction, model_exists, model_dir, class ECGClustering - use_pca
-'''
-
-def ECGClustering(base_dir, clustering_sample_fraction = 0.01):
-    
-    hdf5_file = os.path.join(base_dir, "segments_ecg_data.hdf5")
-    model_dir = os.path.join(base_dir, f"clustering_models/{clustering_sample_fraction}_sample")
-    file_handler = logging.FileHandler(os.path.join(model_dir, 'clustering_log.txt'))
-    logging.getLogger().addHandler(file_handler)
-    
-    # Initialize and run clustering
-    processor = ECGClusterProcessor(hdf5_file, sample_fraction=clustering_sample_fraction, model_exists=False, model_dir=model_dir)
-    processor.run_clustering()
-    
-    logger.info(f"Clustering ECG data and saved to {model_dir}")
-    
-    

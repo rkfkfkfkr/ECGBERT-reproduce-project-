@@ -59,7 +59,7 @@ class HDF5Saver:
     def save_data(self, file_name, ecg_data, fs, seq_len):
         """Save the ECG data and metadata to an HDF5 group."""
         file_group = self.hdf.create_group(file_name)
-        file_group.create_dataset('signal', data=ecg_data)
+        file_group.create_dataset('signal', data=ecg_data, compression="gzip", compression_opts=9)
         file_group.attrs['fs'] = fs
         file_group.attrs['seq_len'] = seq_len
         file_group.attrs['Source'] = file_name
@@ -67,7 +67,7 @@ class HDF5Saver:
 
 # Main processor class that coordinates file processing and saving
 class ECGDataProcessor:
-    def __init__(self, base_dir, chunk_size=5000):
+    def __init__(self, base_dir, chunk_size=10000):
         self.chunk_size = chunk_size
         self.finder = ECGFileFinder(base_dir)
         self.loader = ECGDataLoader()
@@ -88,22 +88,12 @@ class ECGDataProcessor:
                     logger.error(f"Error processing {file}: {e}")
 
         hdf5_saver.close_file()
-'''
-# Usage
-if __name__ == "__main__":
-    base_dir = "D:/data/ECGBERT/org_data/pre_train"
-    output_hdf5 = "D:/data/ECGBERT/for_git4/preprocessing/ecg_data2.hdf5"
-    
-    processor = ECGDataProcessor(base_dir)
-    processor.process_files(output_hdf5)
-    
-    logger.info("Get Data pkl to hdf5")
+
 '''
 # 1. Get Data - pkl to hdf5
-def ECGGetData(org_dir, output_dir):
-
-    output_hdf5 = os.path.join(output_dir, 'ecg_data.hdf5')
+def ECGGetData(org_dir, output_hdf5):
     
     processor = ECGDataProcessor(org_dir)
     processor.process_files(output_hdf5)
     logger.info(f"Get ECG data and saved to {output_hdf5}")
+'''

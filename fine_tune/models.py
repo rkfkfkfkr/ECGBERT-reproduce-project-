@@ -60,63 +60,58 @@ class TokenEmbedding(nn.Module):
         return self.embedding(x)
 
 class PositionalEncoding(nn.Module):
-    def __init__(self, embed_dim, max_len=650002): 
+
+    def __init__(self, max_len: int, d_model: int):
         super().__init__()
-        self.P_E = torch.zeros(max_len, embed_dim, device='cuda', requires_grad=False)
+        position = torch.arange(max_len).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2) * (-math.log(10000.0) / d_model))
+        pe = torch.zeros(max_len, 1, d_model)
+        pe[:, 0, 0::2] = torch.sin(position * div_term)
+        pe[:, 0, 1::2] = torch.cos(position * div_term)
+        self.register_buffer('pe', pe)
 
-        pos = torch.arange(0, max_len, dtype=torch.float, device='cuda').unsqueeze(dim=1)
-        div_term = torch.exp(torch.arange(0, embed_dim, 2, device='cuda').float() * (-torch.log(torch.tensor(10000.0)) / embed_dim))
+    def forward(self, x: Tensor) -> Tensor:
+        """
+        Arguments:
+            x: Tensor, shape ``[seq_len, batch_size, embedding_dim]``
+        """
+        x = x + self.pe[:x.size(0)]
+        return x
 
-        self.P_E[:, 0::2] = torch.sin(pos * div_term)
-        self.P_E[:, 1::2] = torch.cos(pos * div_term)
-
-    def forward(self, x):
-        batch_size, seq_len = x.shape
-        if seq_len > self.P_E.size(0):
-            raise ValueError(f"Sequence length {seq_len} exceeds maximum length {self.P_E.size(0)}")
-        return self.P_E[:seq_len, :].unsqueeze(0).expand(batch_size, -1, -1)
-
-class UNetBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size=3, padding=1, stride=1):
-        super(UNetBlock, self).__init__()
-        self.conv1 = nn.Conv1d(in_channels, out_channels, kernel_size, stride, padding)
-        self.bn1 = nn.BatchNorm1d(out_channels)
-        self.conv2 = nn.Conv1d(out_channels, out_channels, kernel_size, stride, padding)
-        self.bn2 = nn.BatchNorm1d(out_channels)
-
-    def forward(self, x):
-        x = F.relu(self.bn1(self.conv1(x)))
-        return F.relu(self.bn2(self.conv2(x)))
-
-class UNet(nn.Module):
-    def __init__(self, in_channels, out_channels):
-        super(UNet, self).__init__()
-        self.enc1 = UNetBlock(in_channels, 64)
-        self.enc2 = UNetBlock(64, 128)
-        self.bottleneck = UNetBlock(128, 256)
-        self.upconv1 = nn.ConvTranspose1d(256, 128, kernel_size=2, stride=2)
-        self.dec1 = UNetBlock(256, 128)
-        self.upconv2 = nn.ConvTranspose1d(128, 64, kernel_size=2, stride=2)
-        self.dec2 = UNetBlock(128, 64)
-        self.final_conv = nn.Conv1d(64, out_channels, kernel_size=1)
-
-    def forward(self, x):
-        e1 = self.enc1(x)
-        e2 = self.enc2(F.max_pool1d(e1, 2))
-        b = self.bottleneck(F.max_pool1d(e2, 2))
-
-        d1 = self.upconv1(b)
-        d1 = torch.cat([d1, self._crop_tensor(e2, d1)], dim=1)
-        d1 = self.dec1(d1)
-
-        d2 = self.upconv2(d1)
-        d2 = torch.cat([d2, self._crop_tensor(e1, d2)], dim=1)
-        return self.final_conv(self.dec2(d2))
-
-    def _crop_tensor(self, enc_tensor, dec_tensor):
-        if enc_tensor.size(2) != dec_tensor.size(2):
-            enc_tensor = enc_tensor[:, :, :dec_tensor.size(2)]
-        return enc_tensor
+class UNet(nn.Module): 
+    def __init__(self, in_channels, embed_dim): 
+        super(UNetCNNEmbedding, self).__init__() 
+        self.encoder1 = nn.Sequential( 
+            nn.Conv1d(in_channels, embed_dim, kernel_size=7, stride=2, padding=3), 
+            nn.BatchNorm1d(embed_dim), 
+            nn.ReLU(), 
+        ) 
+        self.encoder2 = nn.Sequential( 
+            nn.Conv1d(embed_dim, embed_dim * 2, kernel_size=5, stride=2, padding=2), 
+            nn.BatchNorm1d(embed_dim * 2), 
+            nn.ReLU(), 
+        ) 
+        self.decoder1 = nn.Sequential( 
+            nn.ConvTranspose1d(embed_dim * 2, embed_dim, kernel_size=4, stride=2, padding=1), 
+            nn.BatchNorm1d(embed_dim), 
+            nn.ReLU(), 
+        ) 
+        self.decoder2 = nn.Sequential( 
+            nn.ConvTranspose1d(embed_dim, embed_dim, kernel_size=4, stride=2, padding=1), 
+            nn.BatchNorm1d(embed_dim), 
+            nn.ReLU(), 
+        ) 
+        self.final_conv = nn.Conv1d(embed_dim, embed_dim, kernel_size=3, padding=1) 
+ 
+    def forward(self, x): 
+        enc1 = self.encoder1(x) 
+        enc2 = self.encoder2(enc1) 
+        dec1 = self.decoder1(enc2) 
+        dec2 = self.decoder2(dec1 + enc1) 
+ 
+        x = self.final_conv(dec2) 
+ 
+        return x
 
 class ECGEmbeddingModel(nn.Module):
     def __init__(self, vocab_size, embedding_dim):
